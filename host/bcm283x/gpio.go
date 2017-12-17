@@ -329,11 +329,15 @@ func (p *Pin) FastOut(l gpio.Level) {
 // PWM pins
 //
 // PWM0 is exposed on pins 12, 18 and 40.
+// However, PWM0 is used for generating clock for DMA and unavailable for PWM.
+// TODO(simokawa): Use other DREQ source like PCM.
 //
 // PWM1 is exposed on pins 13, 19, 41 and 45.
 //
 // PWM0 and PWM1 share the same 25Mhz clock source. The period must be a
 // divisor of 25Mhz.
+//
+// DMA driven PWM is aviable for all pins except PWM1 pins, Resolution is 200KHz.
 //
 // Clock pins
 //
@@ -363,9 +367,13 @@ func (p *Pin) PWM(duty gpio.Duty, period time.Duration) error {
 	f := out
 	useDMA := false
 	switch p.number {
-	case 12, 13, 40, 41, 45: // PWM
+	case 12, 40: // PWM0 alt0: disabled
+		useDMA = true
+	case 13, 41, 45: // PWM1
 		f = alt0
-	case 18, 19: // PWM
+	case 18: // PWM0 alt5: disabled
+		useDMA = true
+	case 19: // PWM1
 		f = alt5
 	default:
 		useDMA = true
@@ -461,36 +469,30 @@ func (p *Pin) haltClock() error {
 		return nil
 	}
 	p.usingClock = false
-	switch p.number {
-	// GPCLKx
-	case 4, 20, 32, 34:
-		if _, _, err := clockMemory.gp0.set(0, 0); err != nil {
-			return p.wrap(err)
-		}
-		return nil
-	case 5, 21, 42, 44:
-		return p.wrap(errors.New("GPCLK1 cannot be safely used"))
-	case 6, 43:
-		if _, _, err := clockMemory.gp2.set(0, 0); err != nil {
-			return p.wrap(err)
-		}
-		return nil
 
-	// PWMx
-	case 12, 13, 18, 19, 40, 45:
-		if _, _, err := clockMemory.pwm.set(0, 0); err != nil {
-			return p.wrap(err)
+	// Disable PWMx.
+	switch p.number {
+	// PWM0 is not used.
+	case 12, 18, 40:
+	// PWM1
+	case 13, 19, 41, 45:
+		for _, i := range []int{13, 19, 41, 45} {
+			if cpuPins[i].usingClock {
+				return nil
+			}
 		}
-		// Bit shift for PWM0 and PWM1.
 		shift := uint((p.number & 1) * 8)
 		pwmMemory.ctl &= ^(0xff << shift)
-		return nil
-
-	default:
-		// Technically 52 and 53 could also support PWM as alt1 but they are assumed
-		// to be used for the SD Card.
-		return p.wrap(errors.New("pwm is not supported on this pin"))
 	}
+
+	// Disable PWM clock if nobody use.
+	for _, pin := range cpuPins {
+		if pin.usingClock {
+			return nil
+		}
+	}
+	_, _, err := clockMemory.pwm.set(0, 0)
+	return err
 }
 
 // function returns the current GPIO pin function.
