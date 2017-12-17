@@ -89,7 +89,7 @@ func TestControlBlock(t *testing.T) {
 
 func TestControlBlockGo_String(t *testing.T) {
 	c := controlBlock{}
-	if err := c.initBlock(0, 1, 0, false, true, true, false, dmaPCMTX, 0); err != nil {
+	if err := c.initBlock(0, 1, 0, false, true, false, false, dmaPCMTX, 0); err != nil {
 		t.Fatal(err)
 	}
 	expected := "{\n  transferInfo: NoWideBursts|SrcIgnore|DstDReq|WaitResp|PCMTX,\n  srcAddr:      0x0,\n  dstAddr:      0x7e000001,\n  txLen:        0,\n  stride:       0x0,\n  nextCB:       0x0,\n}"
@@ -125,7 +125,7 @@ func TestDmaChannel_GoString(t *testing.T) {
 	d := dmaChannel{}
 	d.reset()
 	d.startIO(0)
-	expected := "{\n  cs:           WaitForOutstandingWrites|Active|pp8|p8,\n  cbAddr:       0x0,\n  transferInfo: Fire,\n  srcAddr:      0x0,\n  dstAddr:      0x0,\n  txLen:        0,\n  stride:       0x0,\n  nextCB:       0x0,\n  debug:        ReadError|FIFOError|ReadLastNotSetError,\n  reserved:     {...},\n}"
+	expected := "{\n  cs:           WaitForOutstandingWrites|Active|pp8|p8,\n  cbAddr:       0x0,\n  transferInfo: Fire,\n  srcAddr:      0x0,\n  dstAddr:      0x0,\n  txLen:        0,\n  stride:       0x0,\n  nextCB:       0x0,\n  debug:        0,\n  reserved:     {...},\n}"
 	if s := d.GoString(); s != expected {
 		t.Fatalf("%q", s)
 	}

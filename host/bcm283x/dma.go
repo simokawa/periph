@@ -444,31 +444,35 @@ func (c *controlBlock) initBlock(srcAddr, dstAddr, l uint32, srcIO, dstIO, srcIn
 	if srcAddr == 0 {
 		t |= dmaSrcIgnore
 		c.srcAddr = 0
-	} else if srcIO {
-		// Memory mapped register
-		c.srcAddr = physToBus(srcAddr)
-		// BUG: EXPERIMENTING.
-		//t |= dmaSrcInc
-		//c.srcAddr = physToUncachedPhys(srcAddr)
 	} else {
-		// Normal memory
-		c.srcAddr = physToUncachedPhys(srcAddr)
-	}
-	if srcInc {
-		t |= dmaSrcInc
+		if srcIO {
+			// Memory mapped register
+			c.srcAddr = physToBus(srcAddr)
+			// BUG: EXPERIMENTING.
+			//t |= dmaSrcInc
+			//c.srcAddr = physToUncachedPhys(srcAddr)
+		} else {
+			// Normal memory
+			c.srcAddr = physToUncachedPhys(srcAddr)
+		}
+		if srcInc {
+			t |= dmaSrcInc
+		}
 	}
 	if dstAddr == 0 {
 		t |= dmaDstIgnore
 		c.dstAddr = 0
-	} else if dstIO {
-		// Memory mapped register
-		c.dstAddr = physToBus(dstAddr)
 	} else {
-		// Normal memory
-		c.dstAddr = physToUncachedPhys(dstAddr)
-	}
-	if dstInc {
-		t |= dmaDstInc
+		if dstIO {
+			// Memory mapped register
+			c.dstAddr = physToBus(dstAddr)
+		} else {
+			// Normal memory
+			c.dstAddr = physToUncachedPhys(dstAddr)
+		}
+		if dstInc {
+			t |= dmaDstInc
+		}
 	}
 	if dreq != dmaFire {
 		// dmaSrcDReq |
