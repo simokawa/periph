@@ -653,7 +653,7 @@ func allocateCB(size int) ([]controlBlock, *videocore.Mem, error) {
 	return cb, buf, nil
 }
 
-func dmaPWMStart(p *Pin, rng, data uint32) (*dmaChannel, *videocore.Mem, error) {
+func startPWMbyDMA(p *Pin, rng, data uint32) (*dmaChannel, *videocore.Mem, error) {
 	cb, buf, err := allocateCB(4096)
 	if err != nil {
 		return nil, nil, err
@@ -674,7 +674,7 @@ func dmaPWMStart(p *Pin, rng, data uint32) (*dmaChannel, *videocore.Mem, error) 
 	cb[0].nextCB = physBuf + cb_bytes
 	// Low
 	cb[1].initBlock(physBit, dest[0], (rng-data)*4, false, true, false, false, dmaPWM, waits)
-	cb[1].nextCB = physBuf
+	cb[1].nextCB = physBuf // Loop back to cb[0]
 
 	// OK with lite channels.
 	_, ch := pickChannel()
@@ -808,12 +808,15 @@ func (d *driverDMA) Close() error {
 	return nil
 }
 
-func ResetDMA(ch int) {
+func ResetDMA(ch int) error {
 	if ch < len(dmaMemory.channels) {
 		dmaMemory.channels[ch].reset()
 	} else if ch == 15 {
 		dmaChannel15.reset()
+	} else {
+		return fmt.Errorf("Invalid dma channel %d.", ch)
 	}
+	return nil
 }
 
 func init() {

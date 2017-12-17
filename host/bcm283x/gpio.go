@@ -337,7 +337,8 @@ func (p *Pin) FastOut(l gpio.Level) {
 // PWM0 and PWM1 share the same 25Mhz clock source. The period must be a
 // divisor of 25Mhz.
 //
-// DMA driven PWM is aviable for all pins except PWM1 pins, Resolution is 200KHz.
+// DMA driven PWM is aviable for all pins except PWM1 pins, its resolution is
+// 200KHz.
 //
 // Clock pins
 //
@@ -403,7 +404,7 @@ func (p *Pin) PWM(duty gpio.Duty, period time.Duration) error {
 		if err := p.haltDMA(); err != nil {
 			return p.wrap(err)
 		}
-		if p.dmaCh, p.dmaBuf, err = dmaPWMStart(p, uint32(rng), dat); err != nil {
+		if p.dmaCh, p.dmaBuf, err = startPWMbyDMA(p, uint32(rng), dat); err != nil {
 			return p.wrap(err)
 		}
 		if _, _, err = setPWMClockSource(base_freq, div); err != nil {
@@ -453,11 +454,13 @@ func (p *Pin) DefaultPull() gpio.Pull {
 func (p *Pin) haltDMA() error {
 	if p.dmaCh != nil {
 		p.dmaCh.reset()
+		p.dmaCh = nil
 	}
 	if p.dmaBuf != nil {
 		if err := p.dmaBuf.Close(); err != nil {
 			return p.wrap(err)
 		}
+		p.dmaBuf = nil
 	}
 	return nil
 }
