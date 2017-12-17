@@ -741,7 +741,7 @@ func smokeTest() error {
 			// process startup, which may cause undesirable glitches.
 
 			// Initializes the PWM clock right away to 1MHz.
-			_, waits, err := setPWMClockSource(1000000)
+			_, waits, err := setPWMClockSource(1000000, 10)
 			if err != nil {
 				return err
 			}
