@@ -227,7 +227,8 @@ func setPWMClockSource(hz uint64) (uint64, int, error) {
 	if clockMemory == nil {
 		return 0, 0, errors.New("subsystem Clock not initialized")
 	}
-	actual, divs, err := clockMemory.pwm.set(hz, dmaWaitcyclesMax+1)
+	multipier := uint32(2) // Should be more than 1.
+	actual, divs, err := clockMemory.pwm.set(hz*uint64(multipier), dmaWaitcyclesMax+1)
 	if err == nil {
 		pwmMemory.ctl = 0
 		Nanospin(10 * time.Microsecond)
@@ -235,7 +236,7 @@ func setPWMClockSource(hz uint64) (uint64, int, error) {
 		Nanospin(10 * time.Microsecond)
 		// It acts as a clock multiplier, since this amount of data is sent per
 		// clock tick.
-		pwmMemory.rng1 = 10 // 32?
+		pwmMemory.rng1 = uint32(divs) * multipier
 		Nanospin(10 * time.Microsecond)
 		// Periph data (?)
 
