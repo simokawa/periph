@@ -448,9 +448,6 @@ func (c *controlBlock) initBlock(srcAddr, dstAddr, l uint32, srcIO, dstIO, srcIn
 		if srcIO {
 			// Memory mapped register
 			c.srcAddr = physToBus(srcAddr)
-			// BUG: EXPERIMENTING.
-			//t |= dmaSrcInc
-			//c.srcAddr = physToUncachedPhys(srcAddr)
 		} else {
 			// Normal memory
 			c.srcAddr = physToUncachedPhys(srcAddr)
@@ -517,7 +514,11 @@ func (d *dmaChannel) isAvailable() bool {
 // It doesn't clear the local controlBlock cached values.
 func (d *dmaChannel) reset() {
 	d.cs = dmaReset
+	// Clear bits if needed.
+	// TODO(simokawa): Test if it works as expected.
+	d.cs = dmaInterrupt
 	d.cbAddr = 0
+	d.nextCB = 0
 }
 
 // startIO initializes the DMA channel to start a transmission.
@@ -648,7 +649,6 @@ func allocateCB(size int) ([]controlBlock, *videocore.Mem, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	// TODO(simokawa): call buf.Close()
 	var cb []controlBlock
 	if err := buf.AsPOD(&cb); err != nil {
 		buf.Close()
@@ -663,11 +663,11 @@ func startPWMbyDMA(p *Pin, rng, data uint32) (*dmaChannel, *videocore.Mem, error
 		return nil, nil, err
 	}
 	u := buf.Uint32()
-	cb_bytes := uint32(32)
-	offset_bytes := cb_bytes * 2
-	u[offset_bytes/4] = uint32(1) << uint(p.number&31)
+	cbBytes := uint32(32)
+	offsetBytes := cbBytes * 2
+	u[offsetBytes/4] = uint32(1) << uint(p.number&31)
 	physBuf := uint32(buf.PhysAddr())
-	physBit := physBuf + offset_bytes
+	physBit := physBuf + offsetBytes
 	dest := [2]uint32{
 		gpioBaseAddr + 0x28 + 4*uint32(p.number/32), // clear
 		gpioBaseAddr + 0x1C + 4*uint32(p.number/32), // set
@@ -675,7 +675,7 @@ func startPWMbyDMA(p *Pin, rng, data uint32) (*dmaChannel, *videocore.Mem, error
 	waits := 0
 	// High
 	cb[0].initBlock(physBit, dest[1], data*4, false, true, false, false, dmaPWM, waits)
-	cb[0].nextCB = physBuf + cb_bytes
+	cb[0].nextCB = physBuf + cbBytes
 	// Low
 	cb[1].initBlock(physBit, dest[0], (rng-data)*4, false, true, false, false, dmaPWM, waits)
 	cb[1].nextCB = physBuf // Loop back to cb[0]
