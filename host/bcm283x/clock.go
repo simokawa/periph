@@ -292,6 +292,7 @@ func (c *clock) setRaw(ctl clockCtl, div int) error {
 	if c.div != d {
 		return errors.New("can't write to clock divisor CPU register")
 	}
+	fmt.Println(c.String())
 	return nil
 }
 

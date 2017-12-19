@@ -812,6 +812,12 @@ func (d *driverDMA) Close() error {
 	return nil
 }
 
+func DebugDMA() {
+	for i, ch := range dmaMemory.channels {
+		fmt.Println(i, ch.cs.String())
+	}
+}
+
 func ResetDMA(ch int) error {
 	if ch < len(dmaMemory.channels) {
 		dmaMemory.channels[ch].reset()

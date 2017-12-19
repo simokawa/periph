@@ -404,12 +404,14 @@ func (p *Pin) PWM(duty gpio.Duty, period time.Duration) error {
 		if err := p.haltDMA(); err != nil {
 			return p.wrap(err)
 		}
+		p.setFunction(f)
 		if p.dmaCh, p.dmaBuf, err = startPWMbyDMA(p, uint32(rng), dat); err != nil {
 			return p.wrap(err)
 		}
 		if _, _, err = setPWMClockSource(base_freq, div); err != nil {
 			return err
 		}
+		fmt.Println(clockMemory.pwm.String())
 	} else {
 		// TODO(maruel): Leverage oversampling.
 		// Total cycles in the period
@@ -452,11 +454,15 @@ func (p *Pin) DefaultPull() gpio.Pull {
 // Internal code.
 
 func (p *Pin) haltDMA() error {
+	fmt.Println("haltDMA")
 	if p.dmaCh != nil {
 		p.dmaCh.reset()
+		fmt.Println("dmaCh.reset")
+		// Make sure it actually stopped.
 		p.dmaCh = nil
 	}
 	if p.dmaBuf != nil {
+		fmt.Println("dmaBuf.Close")
 		if err := p.dmaBuf.Close(); err != nil {
 			return p.wrap(err)
 		}
@@ -481,9 +487,11 @@ func (p *Pin) haltClock() error {
 	case 13, 19, 41, 45:
 		for _, i := range []int{13, 19, 41, 45} {
 			if cpuPins[i].usingClock {
+				fmt.Println(i, "PWM used")
 				return nil
 			}
 		}
+		fmt.Println("disable PWM1")
 		shift := uint((p.number & 1) * 8)
 		pwmMemory.ctl &= ^(0xff << shift)
 	}
@@ -491,9 +499,11 @@ func (p *Pin) haltClock() error {
 	// Disable PWM clock if nobody use.
 	for _, pin := range cpuPins {
 		if pin.usingClock {
+			fmt.Println(pin.number, "clock used")
 			return nil
 		}
 	}
+	fmt.Println("disable PWM Clock")
 	_, _, err := clockMemory.pwm.set(0, 0)
 	return err
 }
