@@ -615,6 +615,7 @@ func pickChannel(blacklist ...int) (int, *dmaChannel) {
 					goto skip
 				}
 			}
+			fmt.Printf("%d: %s\n", i, dmaMemory.channels[i].cs.String())
 			if dmaMemory.channels[i].isAvailable() {
 				dmaMemory.channels[i].reset()
 				return i, &dmaMemory.channels[i]
