@@ -47,17 +47,24 @@ func (s *SmokeTest) Run(f *flag.FlagSet, args []string) error {
 	}
 
 	start := time.Now()
-	pClk := &loggingPin{bcm283x.GPIO6, start}
+	pDMA := &loggingPin{bcm283x.GPIO6, start}
 	pPWM := &loggingPin{bcm283x.GPIO13, start}
 	// First make sure they are connected together.
-	if err := ensureConnectivity(pClk, pPWM); err != nil {
+	if err := ensureConnectivity(pDMA, pPWM); err != nil {
 		return err
 	}
 	// Confirmed they are connected. Now ready to test.
-	if err := s.testPWMbyDMA(pClk, pPWM); err != nil {
+	if err := s.testPWMbyDMA(pDMA, pPWM); err != nil {
 		return err
 	}
-	if err := s.testPWM(pPWM, pClk); err != nil {
+	if err := s.testPWM(pPWM, pDMA); err != nil {
+		return err
+	}
+	// Make sure to stop PWM pins
+	if err := pPWM.In(gpio.PullDown, gpio.NoEdge); err != nil {
+		return err
+	}
+	if err := pDMA.In(gpio.PullDown, gpio.NoEdge); err != nil {
 		return err
 	}
 	return nil
@@ -146,7 +153,7 @@ func (s *SmokeTest) testPWM(p1, p2 *loggingPin) error {
 		return err
 	}
 
-	if err := p2.PWM(gpio.DutyHalf, period); err != nil {
+	if err := p1.PWM(gpio.DutyHalf, period); err != nil {
 		return err
 	}
 	return nil
