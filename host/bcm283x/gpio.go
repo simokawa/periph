@@ -328,8 +328,8 @@ func (p *Pin) FastOut(l gpio.Level) {
 //
 // PWM pins
 //
-// PWM0 is exposed on pins 12, 18 and 40.
-// However, PWM0 is used for generating clock for DMA and unavailable for PWM.
+// PWM0 is exposed on pins 12, 18 and 40. However, PWM0 is used for generating
+// clock for DMA and unavailable for PWM.
 // TODO(simokawa): Use other DREQ source like PCM.
 //
 // PWM1 is exposed on pins 13, 19, 41 and 45.
@@ -337,7 +337,7 @@ func (p *Pin) FastOut(l gpio.Level) {
 // PWM0 and PWM1 share the same 25Mhz clock source. The period must be a
 // divisor of 25Mhz.
 //
-// DMA driven PWM is aviable for all pins except PWM1 pins, its resolution is
+// DMA driven PWM is available for all pins except PWM1 pins, its resolution is
 // 200KHz.
 //
 // Clock pins

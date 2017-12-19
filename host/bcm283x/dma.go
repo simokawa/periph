@@ -655,6 +655,9 @@ func allocateCB(size int) ([]controlBlock, *videocore.Mem, error) {
 }
 
 func startPWMbyDMA(p *Pin, rng, data uint32) (*dmaChannel, *videocore.Mem, error) {
+	if dmaMemory == nil {
+		return nil, nil, errors.New("bcm283x-dma is not initialized; try running as root?")
+	}
 	cb, buf, err := allocateCB(4096)
 	if err != nil {
 		return nil, nil, err
