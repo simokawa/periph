@@ -212,7 +212,7 @@ func (p *pcmMap) set() {
 	p.dreq = 0x10<<pcmDreqTXPanicShift | 0x30<<pcmDreqTXLevelShift
 	p.cs |= pcmDMAEnable
 	//  pcmTXThresholdOne ?
-	//p.cs |= pcmTXEnable
+	p.cs |= pcmTXEnable
 }
 
 // setPCMClockSource sets the PCM clock.
@@ -228,7 +228,6 @@ func setPCMClockSource(hz uint64) (uint64, int, error) {
 		return 0, 0, errors.New("subsystem Clock not initialized")
 	}
 	actual, divs, err := clockMemory.pcm.set(hz, 1)
-	fmt.Println(hz, clockMemory.pcm.String())
 	if err == nil {
 		pcmMemory.cs = 0
 	}

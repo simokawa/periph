@@ -520,10 +520,8 @@ func (d *dmaChannel) isAvailable() bool {
 //
 // It doesn't clear the local controlBlock cached values.
 func (d *dmaChannel) reset() {
-	log.Printf("reset(): %s", d.cs)
 	d.cs = dmaReset
 	d.cbAddr = 0
-	log.Printf("reset(): end %s", d.cs)
 }
 
 // startIO initializes the DMA channel to start a transmission.
@@ -724,7 +722,6 @@ func dmaWriteStreamPCM(p *Pin, w gpiostream.Stream) error {
 		return nil
 	}
 
-	log.Printf("PCM: %#v", pcmMemory)
 	resolution := w.Resolution()
 	hz := uint64(time.Second / resolution)
 	// We must calculate the clock rate right away to be able to specify the
@@ -759,36 +756,31 @@ func dmaWriteStreamPCM(p *Pin, w gpiostream.Stream) error {
 		return err
 	}
 	pcmMemory.reset()
-	log.Printf("PCM: %#v", pcmMemory)
 	reg := pcmBaseAddr + 0x4 // pcmMap.fifo
 	if err := cb.initBlock(uint32(buf.PhysAddr()), reg, uint32(len(bits.Bits)), false, true, true, false, dmaPCMTX, waits); err != nil {
 		return err
 	}
-	fmt.Println(cb.GoString())
 
 	// Try using a full bandwidth channel.
-	chNum, ch := pickChannel(6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
+	_, ch := pickChannel(6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
 	if ch == nil {
 		return errors.New("bcm283x-dma: no channel available")
 	}
 	pcmMemory.set()
 
 	defer ch.reset()
-	log.Printf("Channel: %d", chNum)
 	ch.startIO(uint32(pCB.PhysAddr()))
 
 	defer pcmMemory.reset()
 
-	Nanospin(time.Microsecond)
-	log.Printf("PCM: %#v", pcmMemory)
-	log.Printf("srcAddr: %#v", ch.srcAddr)
-	pcmMemory.cs |= pcmTXEnable
-	log.Printf("srcAddr: %#v", ch.srcAddr)
-	Nanospin(time.Microsecond)
-	log.Printf("PCM: %#v", pcmMemory)
-	log.Printf("DMA: %#v", ch.cs.String())
-	log.Printf("srcAddr: %#v", ch.srcAddr)
-	return ch.wait()
+	if err := ch.wait(); err != nil {
+		return err
+	}
+	// We have to wait PCM to be finished even after DMA finished.
+	for pcmMemory.cs&pcmTXEmpty == 0 {
+		Nanospin(10 * time.Nanosecond)
+	}
+	return nil
 }
 
 func allocateCB(size int) ([]controlBlock, *videocore.Mem, error) {
