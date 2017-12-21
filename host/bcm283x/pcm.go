@@ -202,15 +202,17 @@ func (p *pcmMap) reset() {
 
 // set initializes 8 bits stream via DMA with no delay and no FS.
 func (p *pcmMap) set() {
-	p.txc = pcmTX1Enable
-	p.cs = pcmTXClear | pcmRXClear
+	p.cs |= pcmEnable
+	p.txc = pcmTX1Width | pcmTX1Channel16 | pcmTX1Enable // 32bit TX
+	p.mode = (32 - 1) << pcmFrameLengthShift
+	p.cs |= pcmTXClear | pcmRXClear
 	// In theory need to wait the equivalent of 2 PCM clocks.
 	// TODO(maruel): Use pcmSync busy loop to synchronize.
 	Nanospin(time.Microsecond)
-	p.dreq = 16<<pcmDreqTXPanicShift | 30<<pcmDreqTXLevelShift
+	p.dreq = 0x10<<pcmDreqTXPanicShift | 0x30<<pcmDreqTXLevelShift
 	p.cs |= pcmDMAEnable
 	//  pcmTXThresholdOne ?
-	p.cs |= pcmEnable | pcmTXEnable
+	//p.cs |= pcmTXEnable
 }
 
 // setPCMClockSource sets the PCM clock.
@@ -225,7 +227,8 @@ func setPCMClockSource(hz uint64) (uint64, int, error) {
 	if clockMemory == nil {
 		return 0, 0, errors.New("subsystem Clock not initialized")
 	}
-	actual, divs, err := clockMemory.pcm.set(hz, dmaWaitcyclesMax+1)
+	actual, divs, err := clockMemory.pcm.set(hz, 1)
+	fmt.Println(hz, clockMemory.pcm.String())
 	if err == nil {
 		pcmMemory.cs = 0
 	}

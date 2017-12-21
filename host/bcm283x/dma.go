@@ -41,6 +41,7 @@
 package bcm283x
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
@@ -687,12 +688,37 @@ func dmaReadStream(p *Pin, b *gpiostream.BitStreamLSB) error {
 	return err
 }
 
+// DMA buf is encoded as little-endian and MSB first for PCM and PWM.
+func copyStreamToDMAbuf(w gpiostream.Stream, dst []uint32) error {
+	switch v := w.(type) {
+	case *gpiostream.BitStreamMSB:
+		// This is big-endian and MSB first.
+		i := 0
+		for ; i < len(v.Bits)/4; i++ {
+			dst[i] = binary.BigEndian.Uint32(v.Bits[i*4:])
+		}
+		last := uint32(0)
+		if mod := len(v.Bits) % 4; mod > 0 {
+			for j := 0; j < mod; j++ {
+				last |= (uint32(v.Bits[i*4+j])) << uint32(8*(3-j))
+			}
+			dst[i] = last
+		}
+		return nil
+	case *gpiostream.BitStreamLSB:
+		// This is big-endian and LSB first.
+		return errors.New("TODO(simokawa): handle BitStreamLSB")
+	default:
+		return errors.New("Unsupported Stream type")
+	}
+}
+
 // dmaWriteStreamPCM streams data to a PCM enabled pin as a half-duplex I²S
 // channel.
 func dmaWriteStreamPCM(p *Pin, w gpiostream.Stream) error {
-	bits, ok := w.(*gpiostream.BitStreamLSB)
+	bits, ok := w.(*gpiostream.BitStreamMSB)
 	if !ok {
-		return errors.New("TODO(maruel): handle other Stream than BitStreamLSB")
+		return errors.New("TODO(maruel): handle other Stream than BitStreamMSB")
 	}
 	if len(bits.Bits) == 0 {
 		return nil
@@ -703,7 +729,7 @@ func dmaWriteStreamPCM(p *Pin, w gpiostream.Stream) error {
 	hz := uint64(time.Second / resolution)
 	// We must calculate the clock rate right away to be able to specify the
 	// right waits value.
-	_, _, _, actualHz, err := calcSource(hz, dmaWaitcyclesMax+1)
+	_, _, _, actualHz, err := calcSource(hz, 1)
 	if err != nil {
 		return err
 	}
@@ -715,7 +741,7 @@ func dmaWriteStreamPCM(p *Pin, w gpiostream.Stream) error {
 		return err
 	}
 	defer buf.Close()
-	copy(buf.Bytes(), bits.Bits)
+	copyStreamToDMAbuf(w, buf.Uint32())
 
 	pCB, err := videocore.Alloc(4096)
 	if err != nil {
@@ -728,27 +754,40 @@ func dmaWriteStreamPCM(p *Pin, w gpiostream.Stream) error {
 	}
 
 	_, waits, err := setPCMClockSource(hz)
+	waits = 0
 	if err != nil {
 		return err
 	}
 	pcmMemory.reset()
+	log.Printf("PCM: %#v", pcmMemory)
 	reg := pcmBaseAddr + 0x4 // pcmMap.fifo
 	if err := cb.initBlock(uint32(buf.PhysAddr()), reg, uint32(len(bits.Bits)), false, true, true, false, dmaPCMTX, waits); err != nil {
 		return err
 	}
+	fmt.Println(cb.GoString())
 
 	// Try using a full bandwidth channel.
 	chNum, ch := pickChannel(6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
 	if ch == nil {
 		return errors.New("bcm283x-dma: no channel available")
 	}
+	pcmMemory.set()
+
 	defer ch.reset()
 	log.Printf("Channel: %d", chNum)
 	ch.startIO(uint32(pCB.PhysAddr()))
 
-	pcmMemory.set()
 	defer pcmMemory.reset()
+
+	Nanospin(time.Microsecond)
 	log.Printf("PCM: %#v", pcmMemory)
+	log.Printf("srcAddr: %#v", ch.srcAddr)
+	pcmMemory.cs |= pcmTXEnable
+	log.Printf("srcAddr: %#v", ch.srcAddr)
+	Nanospin(time.Microsecond)
+	log.Printf("PCM: %#v", pcmMemory)
+	log.Printf("DMA: %#v", ch.cs.String())
+	log.Printf("srcAddr: %#v", ch.srcAddr)
 	return ch.wait()
 }
 
@@ -1162,7 +1201,7 @@ func (d *driverDMA) Close() error {
 	return nil
 }
 
-func resetDMA(ch int) error {
+func ResetDMA(ch int) error {
 	if ch < len(dmaMemory.channels) {
 		dmaMemory.channels[ch].reset()
 	} else if ch == 15 {
