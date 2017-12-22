@@ -65,7 +65,7 @@ func raster32Bits(s gpiostream.Stream, resolution time.Duration, clear, set []ui
 	default:
 		return fmt.Errorf("Unsupported type %T", b)
 	}
-	m := len(clear) / 8
+	m := len(clear) / 4
 	if n := len(bits); n < m {
 		m = n
 	}

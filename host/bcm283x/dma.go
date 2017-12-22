@@ -990,7 +990,7 @@ func dmaWriteStreamDualChannel(p *Pin, w gpiostream.Stream) error {
 	hz := multiplier * uint64(time.Second/resolution)
 	// We must calculate the clock rate right away to be able to specify the
 	// right waits value.
-	_, _, _, actualHz, err := calcSource(hz*multiplier, 1)
+	_, _, _, actualHz, err := calcSource(hz, 1)
 	if err != nil {
 		return err
 	}
@@ -998,6 +998,7 @@ func dmaWriteStreamDualChannel(p *Pin, w gpiostream.Stream) error {
 		return errors.New("TODO(maruel): handle oversampling")
 	}
 	waits := 0
+	// TODO(simokawa): fix Duration() which returns 8x smaller value.
 	l := int((w.Duration()+resolution/2)/resolution) * 32
 	log.Printf("Buffer size %d", l)
 	bufLen := (l + 0xFFF) &^ 0xFFF
@@ -1059,7 +1060,7 @@ func dmaWriteStreamDualChannel(p *Pin, w gpiostream.Stream) error {
 	chClear.startIO(uint32(pCB.PhysAddr()) + 32) // cb[1]
 
 	// TODO(maruel): Skip calling calcSource() a second time.
-	_, waits, err = setPWMClockSource(multiplier, uint32(multiplier))
+	_, waits, err = setPWMClockSource(hz, uint32(multiplier))
 	if err != nil {
 		return err
 	}
