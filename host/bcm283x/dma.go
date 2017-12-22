@@ -777,7 +777,7 @@ func dmaWriteStreamPCM(p *Pin, w gpiostream.Stream) error {
 		return err
 	}
 	// We have to wait PCM to be finished even after DMA finished.
-	for pcmMemory.cs&pcmTXEmpty == 0 {
+	for pcmMemory.cs&pcmTXErr == 0 {
 		Nanospin(10 * time.Nanosecond)
 	}
 	return nil
