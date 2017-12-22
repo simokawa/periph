@@ -6,6 +6,7 @@ package bcm283x
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"periph.io/x/periph/conn/gpio"
@@ -33,24 +34,48 @@ func uint32ToBit(w gpiostream.BitsLSB, d []uint8, bit uint8, skip int) {
 	}
 }
 
-func raster32Bits(b *gpiostream.BitStreamLSB, resolution time.Duration, clear, set []uint32, mask uint32) error {
-	if resolution != b.Res {
+func getBit(b []byte, index uint, msb bool) byte {
+	i := index / 8
+	var shift uint
+	if msb {
+		shift = 7 - index%8
+	} else {
+		shift = index % 8
+	}
+	return (b[i] >> shift) & 1
+}
+
+func raster32Bits(s gpiostream.Stream, resolution time.Duration, clear, set []uint32, mask uint32) error {
+	if resolution != s.Resolution() {
 		// TODO(maruel): Implement nearest neighborhood filter.
 		return errors.New("bcm283x: TODO: implement resolution matching")
 	}
-	if b.Duration() > resolution*time.Duration(len(clear)) {
+	if s.Duration() > resolution*time.Duration(len(clear)) {
 		return errors.New("bcm283x: buffer is too short")
 	}
+	var msb bool
+	var bits []byte
+	switch b := s.(type) {
+	case *gpiostream.BitStreamLSB:
+		msb = false
+		bits = b.Bits
+	case *gpiostream.BitStreamMSB:
+		msb = true
+		bits = b.Bits
+	default:
+		return fmt.Errorf("Unsupported type %T", b)
+	}
 	m := len(clear) / 8
-	if n := len(b.Bits); n < m {
+	if n := len(bits); n < m {
 		m = n
 	}
 	for i := 0; i < m; i++ {
 		for j := 0; j < 8; j++ {
-			if b.Bits[i]&(1<<uint(j)) != 0 {
-				set[8*i+j] |= mask
+			index := uint(8*i + j)
+			if getBit(bits, index, msb) != 0 {
+				set[index] |= mask
 			} else {
-				clear[8*i+j] |= mask
+				clear[index] |= mask
 			}
 		}
 	}
@@ -99,6 +124,8 @@ func raster32(s gpiostream.Stream, resolution time.Duration, clear, set []uint32
 	}
 	switch x := s.(type) {
 	case *gpiostream.BitStreamLSB:
+		return raster32Bits(x, resolution, clear, set, mask)
+	case *gpiostream.BitStreamMSB:
 		return raster32Bits(x, resolution, clear, set, mask)
 	case *gpiostream.EdgeStream:
 		return raster32Edges(x, resolution, clear, set, mask)
