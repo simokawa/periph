@@ -895,8 +895,8 @@ func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
 		}
 		stride++
 	}
-	// l := count * 32(cb) + 4(mask)?
-	l := count*256 + 4096
+	// 32 bytes for each CB and 4 bytes for the mask.
+	l := count*32 + 4
 	buf, err := videocore.Alloc((l + 0xFFF) &^ 0xFFF)
 	if err != nil {
 		return err
@@ -906,10 +906,8 @@ func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
 	// Setup the single mask buffer of 4Kb.
 	mask := uint32(1) << uint(p.number&31)
 	u := buf.Uint32()
-	offset := (len(buf.Bytes()) - 4096)
-	for i := offset / 4; i < len(buf.Bytes())/4; i++ {
-		u[i] = mask
-	}
+	offset := (len(buf.Bytes()) - 4)
+	u[offset/4] = mask
 	physBit := uint32(buf.PhysAddr()) + uint32(offset)
 
 	// Other constants during the loop.
@@ -935,7 +933,7 @@ func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
 	stride = 1
 	for i := uint(1); i < uint(len(bits)*8); i++ {
 		if v := getBit(bits, i, msb); v != last || stride == 1024 || singlePackets {
-			if err := cb[index].initBlock(physBit, dest[last], stride*4, false, true, true, false, dmaPWM, waits); err != nil {
+			if err := cb[index].initBlock(physBit, dest[last], stride*4, false, true, false, false, dmaPWM, waits); err != nil {
 				return err
 			}
 			// Hardcoded len(controlBlock) == 32. It is not necessary to use
@@ -947,7 +945,7 @@ func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
 		}
 		stride++
 	}
-	if err := cb[index].initBlock(physBit, dest[last], stride*4, false, true, true, false, dmaPWM, waits); err != nil {
+	if err := cb[index].initBlock(physBit, dest[last], stride*4, false, true, false, false, dmaPWM, waits); err != nil {
 		return err
 	}
 
