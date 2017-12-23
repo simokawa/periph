@@ -227,7 +227,7 @@ func setPWMClockSource(hz uint64, div uint32) (uint64, int, error) {
 	if clockMemory == nil {
 		return 0, 0, errors.New("subsystem Clock not initialized")
 	}
-	actual, divs, err := clockMemory.pwm.set(hz, dmaWaitcyclesMax+1)
+	actual, divs, err := clockMemory.pwm.set(hz, 1)
 	if err == nil {
 		// It acts as a clock multiplier, since this amount of data is sent per
 		// clock tick.

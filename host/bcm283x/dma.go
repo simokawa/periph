@@ -425,7 +425,7 @@ type controlBlock struct {
 //
 // dreq can be dmaFire, dmaPwm, dmaPcmTx, etc. waits is additional wait state
 // between clocks.
-func (c *controlBlock) initBlock(srcAddr, dstAddr, l uint32, srcIO, dstIO, srcInc, dstInc bool, dreq dmaTransferInfo, waits int) error {
+func (c *controlBlock) initBlock(srcAddr, dstAddr, l uint32, srcIO, dstIO, srcInc, dstInc bool, dreq dmaTransferInfo, waitsIgnored int) error {
 	if srcIO && dstIO {
 		return errors.New("only one of src and dst can be I/O")
 	}
@@ -440,12 +440,6 @@ func (c *controlBlock) initBlock(srcAddr, dstAddr, l uint32, srcIO, dstIO, srcIn
 	}
 	if dreq&^dmaPerMapMask != 0 {
 		return errors.New("dreq must be one of the clock source, nothing else")
-	}
-	if waits < 0 || waits > dmaWaitcyclesMax {
-		return fmt.Errorf("waits must be between 0 and %d", dmaWaitcyclesMax)
-	}
-	if dreq == dmaFire && waits != 0 {
-		return errors.New("using wait cycles without a clock doesn't make sense")
 	}
 
 	t := dmaNoWideBursts | dmaWaitResp
@@ -481,6 +475,8 @@ func (c *controlBlock) initBlock(srcAddr, dstAddr, l uint32, srcIO, dstIO, srcIn
 	}
 	if dreq != dmaFire {
 		// dmaSrcDReq |
+		// Inserting a wait prevents multiple transfer in a DReq.
+		waits := 1
 		t |= dmaDstDReq | dreq | dmaTransferInfo(waits<<dmaWaitCyclesShift)
 	}
 	c.transferInfo = t
@@ -813,6 +809,7 @@ func startPWMbyDMA(p *Pin, rng, data uint32) (*dmaChannel, *videocore.Mem, error
 	}
 	waits := 0
 	// High
+	// TODO(simokawa): Check error.
 	cb[0].initBlock(physBit, dest[1], data*4, false, true, false, false, dmaPWM, waits)
 	cb[0].nextCB = physBuf + cbBytes
 	// Low
@@ -898,6 +895,7 @@ func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
 		}
 		stride++
 	}
+	// l := count * 32(cb) + 4(mask)?
 	l := count*256 + 4096
 	buf, err := videocore.Alloc((l + 0xFFF) &^ 0xFFF)
 	if err != nil {
@@ -949,11 +947,14 @@ func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
 		}
 		stride++
 	}
-	if err := cb[index].initBlock(physBit, dest[last], stride*4, false, true, false, true, dmaPWM, waits); err != nil {
+	if err := cb[index].initBlock(physBit, dest[last], stride*4, false, true, true, false, dmaPWM, waits); err != nil {
 		return err
 	}
-	// Stop the clock before setting up the DMA controller.
-	if _, _, err := clockMemory.pwm.set(0, 0); err != nil {
+
+	// Start clock before DMA
+	// TODO(maruel): Skip calling calcSource() a second time.
+	_, waits, err = setPWMClockSource(hz, uint32(multiplier))
+	if err != nil {
 		return err
 	}
 
@@ -966,11 +967,6 @@ func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
 	log.Printf("Channel: %d", chNum)
 	ch.startIO(uint32(buf.PhysAddr())) // cb[0]
 
-	// TODO(maruel): Skip calling calcSource() a second time.
-	_, waits, err = setPWMClockSource(hz, uint32(multiplier))
-	if err != nil {
-		return err
-	}
 	status := ch.wait()
 	return status
 }
@@ -1028,9 +1024,10 @@ func dmaWriteStreamDualChannel(p *Pin, w gpiostream.Stream) error {
 	// TODO(maruel): Fix precision, especially when the actualHz is not an exact
 	// multiple.
 
-	// Stop the clock before setting up the DMA controllers so they are
-	// synchronized when they start.
-	if _, _, err := clockMemory.pwm.set(0, 0); err != nil {
+	// Start clock before DMA start
+	// TODO(maruel): Skip calling calcSource() a second time.
+	_, waits, err = setPWMClockSource(hz, uint32(multiplier))
+	if err != nil {
 		return err
 	}
 
@@ -1055,15 +1052,12 @@ func dmaWriteStreamDualChannel(p *Pin, w gpiostream.Stream) error {
 		return errors.New("bcm283x-dma: no secondary channel available")
 	}
 	log.Printf("Channel: %d and %d", x, y)
-	chSet.startIO(uint32(pCB.PhysAddr())) // cb[0]
 	defer chClear.reset()
+
+	// Two channel need to be synchronized but there is not such a mechanism.
+	chSet.startIO(uint32(pCB.PhysAddr()))        // cb[0]
 	chClear.startIO(uint32(pCB.PhysAddr()) + 32) // cb[1]
 
-	// TODO(maruel): Skip calling calcSource() a second time.
-	_, waits, err = setPWMClockSource(hz, uint32(multiplier))
-	if err != nil {
-		return err
-	}
 	err1 := chSet.wait()
 	err2 := chClear.wait()
 	if err1 == nil {
@@ -1192,6 +1186,13 @@ func (d *driverDMA) Init() (bool, error) {
 func (d *driverDMA) Close() error {
 	// Stop DMA and PWM controllers.
 	return nil
+}
+
+func DebugDMA() {
+	for i, ch := range dmaMemory.channels {
+		fmt.Println(i, ch.cs.String())
+	}
+	fmt.Println(15, dmaChannel15.cs.String())
 }
 
 func ResetDMA(ch int) error {
