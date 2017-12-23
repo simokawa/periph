@@ -654,27 +654,26 @@ func dmaReadStream(p *Pin, b *gpiostream.BitStreamLSB) error {
 		return err
 	}
 	defer buf.Close()
-	pCB, err := videocore.Alloc(4096)
+	cb, pCB, err := allocateCB(4)
 	if err != nil {
 		return err
 	}
 	defer pCB.Close()
 
 	// Convert the resolution into clock frequency. This is lossy.
-	hz := uint64(time.Second / b.Res)
-	actualHz, waits, err := setPWMClockSource(hz, 1)
+	multiplier := uint64(2)
+	hz := multiplier * uint64(time.Second/b.Res)
+	actualHz, waits, err := setPWMClockSource(hz, uint32(multiplier))
 	if err != nil {
 		return err
 	}
 
-	var cb *controlBlock
-	if err := pCB.AsPOD(&cb); err != nil {
-		return err
-	}
 	reg := gpioBaseAddr + 0x34 + 4*uint32(p.number/32)
-	if err := cb.initBlock(reg, uint32(buf.PhysAddr()), uint32(l), true, false, false, true, dmaPWM, waits); err != nil {
+	if err := cb[0].initBlock(reg, uint32(buf.PhysAddr()), uint32(l), true, false, false, true, dmaPWM, waits); err != nil {
 		return err
 	}
+	cb[0].transferInfo ^= dmaDstDReq
+	cb[0].transferInfo |= dmaSrcDReq
 	err = runIO(pCB, l > maxLite)
 	// TODO(maruel): Fix precision, especially when the actualHz is not an exact
 	// multiple.
