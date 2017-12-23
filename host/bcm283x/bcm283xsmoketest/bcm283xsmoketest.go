@@ -37,7 +37,9 @@ func (s *SmokeTest) Description() string {
 
 // Run implements the SmokeTest interface.
 func (s *SmokeTest) Run(f *flag.FlagSet, args []string) error {
-	f.Parse(args)
+	if err := f.Parse(args); err != nil {
+		return err
+	}
 	if f.NArg() != 0 {
 		f.Usage()
 		return errors.New("unrecognized arguments")
@@ -55,7 +57,7 @@ func (s *SmokeTest) Run(f *flag.FlagSet, args []string) error {
 		return err
 	}
 	// Confirmed they are connected. Now ready to test.
-	if err := s.testClock(pClk, pPWM); err != nil {
+	if err := s.testPWMbyDMA(pClk, pPWM); err != nil {
 		return err
 	}
 	if err := s.testPWM(pPWM, pClk); err != nil {
@@ -81,9 +83,9 @@ func (s *SmokeTest) waitForEdge(p gpio.PinIO) <-chan bool {
 	return c
 }
 
-// testClock tests .PWM() for a clock pin.
-func (s *SmokeTest) testClock(p1, p2 *loggingPin) error {
-	fmt.Printf("- Testing clock\n")
+// testPWMbyDMA tests .PWM() for a PWM pin driven by DMA.
+func (s *SmokeTest) testPWMbyDMA(p1, p2 *loggingPin) error {
+	fmt.Printf("- Testing DMA PWM\n")
 	const period = 200 * time.Microsecond
 	if err := p2.In(gpio.PullDown, gpio.BothEdges); err != nil {
 		return err
@@ -106,15 +108,16 @@ func (s *SmokeTest) testClock(p1, p2 *loggingPin) error {
 		return fmt.Errorf("unexpected %s value; expected High", p1)
 	}
 
-	// A clock doesn't support arbitrary duty cycle.
-	if err := p1.PWM(gpio.DutyHalf/2, period); err == nil {
-		return fmt.Errorf("expected error on %s", p1)
+	// DMA PWM supports arbitrary duty cycle.
+	if err := p1.PWM(gpio.DutyHalf/2, period); err != nil {
+		return err
 	}
 
 	if err := p1.PWM(gpio.DutyHalf, period); err != nil {
 		return err
 	}
-	return nil
+
+	return p1.Halt()
 }
 
 // testPWM tests .PWM() for a PWM pin.
@@ -147,10 +150,11 @@ func (s *SmokeTest) testPWM(p1, p2 *loggingPin) error {
 		return err
 	}
 
-	if err := p2.PWM(gpio.DutyHalf, period); err != nil {
+	if err := p1.PWM(gpio.DutyHalf, period); err != nil {
 		return err
 	}
-	return nil
+
+	return p1.Halt()
 }
 
 // testDMA tests gpiostream.PinIn and PinOut.
