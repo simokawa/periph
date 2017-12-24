@@ -5,6 +5,7 @@
 package bcm283x
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -12,21 +13,18 @@ import (
 )
 
 func TestRaster32Bits(t *testing.T) {
-	b := gpiostream.BitStreamLSB{Res: time.Second, Bits: make(gpiostream.BitsLSB, 100)}
-	// TODO(maruel): Test all code path, including filtering and all errors.
-	var d32Set []uint32
-	var d32Clear []uint32
-	if err := raster32Bits(&b, 8*time.Millisecond, d32Set, d32Clear, 2); err == nil {
+	b := gpiostream.BitStreamLSB{
+		Res:  time.Second,
+		Bits: []byte{0x1, 0x40}}
+	d32Clear := make([]uint32, 8*2)
+	d32Set := make([]uint32, 8*2)
+	if err := raster32Bits(&b, 1, d32Clear, d32Set, 2); err != nil {
 		t.FailNow()
 	}
-}
-
-func TestRaster32Edges(t *testing.T) {
-	e := gpiostream.EdgeStream{Res: time.Second, Edges: []time.Duration{time.Second, time.Millisecond}}
-	// TODO(maruel): Test all code path, including filtering and all errors.
-	var d32Set []uint32
-	var d32Clear []uint32
-	if err := raster32Edges(&e, 8*time.Millisecond, d32Set, d32Clear, 2); err == nil {
-		t.FailNow()
+	if !reflect.DeepEqual(d32Set, []uint32{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0}) {
+		t.Errorf("unexpected d32Set %v", d32Set)
+	}
+	if !reflect.DeepEqual(d32Clear, []uint32{0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 2}) {
+		t.Errorf("unexpected d32Clear %v", d32Clear)
 	}
 }

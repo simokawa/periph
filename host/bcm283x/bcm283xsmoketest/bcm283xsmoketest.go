@@ -9,6 +9,7 @@
 package bcm283xsmoketest
 
 import (
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -161,6 +162,7 @@ func (s *SmokeTest) testPWM(p1, p2 *loggingPin) error {
 func (s *SmokeTest) testDMA(p1, p2 *loggingPin) error {
 	const period = 200 * time.Microsecond
 	fmt.Printf("- Testing StreamRead\n")
+	defer p2.Halt()
 	if err := p2.PWM(gpio.DutyHalf, period); err != nil {
 		return err
 	}
@@ -173,9 +175,7 @@ func (s *SmokeTest) testDMA(p1, p2 *loggingPin) error {
 	if err := p1.StreamIn(gpio.PullDown, b); err != nil {
 		return err
 	}
-
-	// Do debug the trace, uncomment the following line:
-	//fmt.Printf("%s\n", hex.EncodeToString(b))
+	fmt.Printf("%s\n", hex.EncodeToString(b.Bits))
 
 	// Sum the bits, it should be close to 50%.
 	v := 0
@@ -185,9 +185,11 @@ func (s *SmokeTest) testDMA(p1, p2 *loggingPin) error {
 		}
 	}
 	fraction := (100 * v) / (8 * len(b.Bits))
+	fmt.Println("fraction", fraction)
 	if fraction < 45 || fraction > 55 {
 		return fmt.Errorf("reading clock lead to %d%% bits On, expected 50%%", fraction)
 	}
+
 	// TODO(maruel): There should be 10 streaks.
 	return nil
 }

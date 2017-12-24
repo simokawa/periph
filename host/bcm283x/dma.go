@@ -41,7 +41,6 @@
 package bcm283x
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
@@ -56,7 +55,6 @@ import (
 )
 
 var (
-	// pcmBaseAddr is needed for DMA transfers.
 	pcmBaseAddr     uint32
 	dmaMemory       *dmaMap
 	dmaChannel15    *dmaChannel
@@ -621,7 +619,7 @@ func pickChannel(blacklist ...int) (int, *dmaChannel) {
 				}
 			}
 			if dmaMemory.channels[i].isAvailable() {
-				//dmaMemory.channels[i].reset()
+				dmaMemory.channels[i].reset()
 				return i, &dmaMemory.channels[i]
 			}
 		skip:
@@ -640,8 +638,7 @@ func runIO(pCB pmem.Mem, liteOk bool) error {
 	if !liteOk {
 		blacklist = []int{7, 8, 9, 10, 11, 12, 13, 14, 15}
 	}
-	id, ch := pickChannel(blacklist...)
-	log.Printf("runIO(%t) using channel %d", liteOk, id)
+	_, ch := pickChannel(blacklist...)
 	if ch == nil {
 		return errors.New("bcm283x-dma: no channel available")
 	}
@@ -650,76 +647,23 @@ func runIO(pCB pmem.Mem, liteOk bool) error {
 	return ch.wait()
 }
 
-// dmaReadStream streams input from a pin.
-func dmaReadStream(p *Pin, b *gpiostream.BitStreamLSB) error {
-	// Needs 32x the memory since each read is one full uint32. On the other
-	// hand one could read 32 contiguous pins simultaneously at no cost.
-	l := len(b.Bits) * 32
-	buf, err := videocore.Alloc((l + 0xFFF) &^ 0xFFF)
+func allocateCB(size int) ([]controlBlock, *videocore.Mem, error) {
+	buf, err := dmaBufAllocator((size + 0xFFF) &^ 0xFFF)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	defer buf.Close()
-	cb, pCB, err := allocateCB(4)
-	if err != nil {
-		return err
+	var cb []controlBlock
+	if err := buf.AsPOD(&cb); err != nil {
+		_ = buf.Close()
+		return nil, nil, err
 	}
-	defer pCB.Close()
-
-	// Convert the resolution into clock frequency. This is lossy.
-	multiplier := uint64(2)
-	hz := multiplier * uint64(time.Second/b.Res)
-	actualHz, err := setPWMClockSource(hz, uint32(multiplier))
-	if err != nil {
-		return err
-	}
-
-	reg := gpioBaseAddr + 0x34 + 4*uint32(p.number/32)
-	if err := cb[0].initBlock(reg, uint32(buf.PhysAddr()), uint32(l), true, false, false, true, dmaPWM); err != nil {
-		return err
-	}
-	cb[0].transferInfo ^= dmaDstDReq
-	cb[0].transferInfo |= dmaSrcDReq
-	err = runIO(pCB, l > maxLite)
-	// TODO(maruel): Fix precision, especially when the actualHz is not an exact
-	// multiple.
-	uint32ToBit(b.Bits, buf.Bytes(), uint8(p.number&31), int(actualHz/hz)*4)
-	return err
-}
-
-// DMA buf is encoded as little-endian and MSB first for PCM and PWM.
-func copyStreamToDMAbuf(w gpiostream.Stream, dst []uint32) error {
-	switch v := w.(type) {
-	case *gpiostream.BitStreamMSB:
-		// This is big-endian and MSB first.
-		i := 0
-		for ; i < len(v.Bits)/4; i++ {
-			dst[i] = binary.BigEndian.Uint32(v.Bits[i*4:])
-		}
-		last := uint32(0)
-		if mod := len(v.Bits) % 4; mod > 0 {
-			for j := 0; j < mod; j++ {
-				last |= (uint32(v.Bits[i*4+j])) << uint32(8*(3-j))
-			}
-			dst[i] = last
-		}
-		return nil
-	case *gpiostream.BitStreamLSB:
-		// This is big-endian and LSB first.
-		return errors.New("TODO(simokawa): handle BitStreamLSB")
-	default:
-		return errors.New("Unsupported Stream type")
-	}
+	return cb, buf, nil
 }
 
 // dmaWriteStreamPCM streams data to a PCM enabled pin as a half-duplex I²S
 // channel.
 func dmaWriteStreamPCM(p *Pin, w gpiostream.Stream) error {
-	bits, ok := w.(*gpiostream.BitStreamMSB)
-	if !ok {
-		return errors.New("TODO(maruel): handle other Stream than BitStreamMSB")
-	}
-	if len(bits.Bits) == 0 {
+	if w.Duration() == 0 {
 		return nil
 	}
 
@@ -734,31 +678,30 @@ func dmaWriteStreamPCM(p *Pin, w gpiostream.Stream) error {
 	if actualHz != hz {
 		return errors.New("TODO(maruel): handle oversampling")
 	}
-	buf, err := videocore.Alloc((len(bits.Bits) + 0xFFF) &^ 0xFFF)
+
+	l := (int(w.Duration()/resolution) + 7) / 8 // Bytes
+	buf, err := dmaBufAllocator((l + 0xFFF) &^ 0xFFF)
 	if err != nil {
 		return err
 	}
 	defer buf.Close()
-	copyStreamToDMAbuf(w, buf.Uint32())
+	if err := copyStreamToDMABuf(w, buf.Uint32()); err != nil {
+		return err
+	}
 
-	pCB, err := videocore.Alloc(4096)
+	cb, pCB, err := allocateCB(4096)
 	if err != nil {
 		return err
 	}
 	defer pCB.Close()
-	var cb *controlBlock
-	if err := pCB.AsPOD(&cb); err != nil {
-		return err
-	}
 
-	// TODO(simokawa): Support oversampling
+	pcmMemory.reset()
 	_, _, err = setPCMClockSource(hz)
 	if err != nil {
 		return err
 	}
-	pcmMemory.reset()
 	reg := pcmBaseAddr + 0x4 // pcmMap.fifo
-	if err := cb.initBlock(uint32(buf.PhysAddr()), reg, uint32(len(bits.Bits)), false, true, true, false, dmaPCMTX); err != nil {
+	if err := cb[0].initBlock(uint32(buf.PhysAddr()), reg, uint32(l), false, true, true, false, dmaPCMTX); err != nil {
 		return err
 	}
 
@@ -782,19 +725,6 @@ func dmaWriteStreamPCM(p *Pin, w gpiostream.Stream) error {
 		Nanospin(10 * time.Nanosecond)
 	}
 	return nil
-}
-
-func allocateCB(size int) ([]controlBlock, *videocore.Mem, error) {
-	buf, err := dmaBufAllocator((size + 0xFFF) &^ 0xFFF)
-	if err != nil {
-		return nil, nil, err
-	}
-	var cb []controlBlock
-	if err := buf.AsPOD(&cb); err != nil {
-		_ = buf.Close()
-		return nil, nil, err
-	}
-	return cb, buf, nil
 }
 
 func startPWMbyDMA(p *Pin, rng, data uint32) (*dmaChannel, *videocore.Mem, error) {
@@ -844,17 +774,63 @@ func startPWMbyDMA(p *Pin, rng, data uint32) (*dmaChannel, *videocore.Mem, error
 	return ch, buf, nil
 }
 
+func overSamples(s gpiostream.Stream) (int, error) {
+	freq := time.Duration(pwmDMAFreq)
+	resolution := s.Resolution()
+	skip := (freq*resolution + time.Second/2) / time.Second
+	if skip < 1 {
+		return 0, fmt.Errorf("resolution is too small(%s)", resolution)
+	}
+	actualRes := time.Second / (freq / skip)
+	fmt.Println("res", resolution, actualRes)
+	errorPercent := 100 * (actualRes - resolution) / resolution
+	if errorPercent < -10 || errorPercent > 10 {
+		return 0, fmt.Errorf("actual resolution differs more than 10%%(%s vs %s)", resolution, actualRes)
+	}
+	return int(skip), nil
+}
+
+// dmaReadStream streams input from a pin.
+func dmaReadStream(p *Pin, b *gpiostream.BitStreamLSB) error {
+	_, err := setPWMClockSource()
+	if err != nil {
+		return err
+	}
+	skip, err := overSamples(b)
+	if err != nil {
+		return err
+	}
+
+	// Needs 32x the memory since each read is one full uint32. On the other
+	// hand one could read 32 contiguous pins simultaneously at no cost.
+	l := len(b.Bits) * 8 * 4 * int(skip)
+	// TODO(simokawa): Allocate multiple pages and CBs for huge buffer.
+	buf, err := dmaBufAllocator((l + 0xFFF) &^ 0xFFF)
+	if err != nil {
+		return err
+	}
+	defer buf.Close()
+	cb, pCB, err := allocateCB(4)
+	if err != nil {
+		return err
+	}
+	defer pCB.Close()
+
+	reg := gpioBaseAddr + 0x34 + 4*uint32(p.number/32) // GPIO Pin Level 0
+	if err := cb[0].initBlock(reg, uint32(buf.PhysAddr()), uint32(l), true, false, false, true, dmaPWM); err != nil {
+		return err
+	}
+	err = runIO(pCB, l <= maxLite)
+	uint32ToBit(b.Bits, buf.Bytes(), uint8(p.number&31), skip*4)
+	return err
+}
+
 // dmaWriteStreamEdges streams data to a pin as a half-duplex one controlBlock
 // per bit toggle DMA stream.
 //
-// Memory usage is 4Kb + 256x the number of bit changes rounded up to nearest
-// 4Kb, so an arbitrary stream of 1s or 0s only takes 8Kb but a stream of
+// Memory usage is 32 bytes x number of bit changes rounded up to nearest
+// 4Kb, so an arbitrary stream of 1s or 0s only takes 4Kb but a stream of
 // 101010s will takes 256x the memory.
-//
-// The 4Kb page is one mask uint32 then a series of 0s for when the bit stream
-// is not toggling.
-//
-// TODO(maruel): Add read support.
 //
 // TODO(maruel): Use huffman-coding-like repeated patterns detection to
 // "compress" the bitstream. This trades off upfront computation for lower
@@ -865,6 +841,9 @@ func startPWMbyDMA(p *Pin, rng, data uint32) (*dmaChannel, *videocore.Mem, error
 // the DMA controller write in a following controlBlock.nextCB.
 // handling gpiostream.Program explicitly.
 func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
+	if w.Duration() == 0 {
+		return nil
+	}
 	var bits []byte
 	var msb bool
 	switch v := w.(type) {
@@ -877,22 +856,9 @@ func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
 	default:
 		return fmt.Errorf("Unknown type: %T", v)
 	}
-	if len(bits) == 0 {
-		return nil
-	}
-	resolution := w.Resolution()
-	// Double the frequncy because we double the divisor.
-	multiplier := uint64(2)
-	hz := multiplier * uint64(time.Second/resolution)
-	// We must calculate the clock rate right away to be able to specify the
-	// right waits value.
-	// TODO(simokawa): We don't need divs here anymore. Remove calcSource() here.
-	_, _, _, actualHz, err := calcSource(hz, 1)
+	skip, err := overSamples(w)
 	if err != nil {
 		return err
-	}
-	if actualHz != hz {
-		return errors.New("TODO(maruel): handle oversampling")
 	}
 	// TODO(maruel): Fix precision, especially when the actualHz is not an exact
 	// multiple.
@@ -903,18 +869,19 @@ func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
 	// Calculate the number of controlBlock needed.
 	count := 1
 	stride := uint32(1)
-	last := getBit(bits, 0, msb)
-	for i := uint(1); i < uint(len(bits)*8); i++ {
-		if v := getBit(bits, i, msb); v != last || stride == 1024 || singlePackets {
+	last := getBit(bits[0], 0, msb)
+	l := int(w.Duration() / w.Resolution()) // Bits
+	for i := 1; i < l; i++ {
+		if v := getBit(bits[i/8], i%8, msb); v != last || stride == maxLite || singlePackets {
 			last = v
 			count++
 			stride = 0
 		}
-		stride++
+		stride += uint32(skip)
 	}
 	// 32 bytes for each CB and 4 bytes for the mask.
-	l := count*32 + 4
-	buf, err := videocore.Alloc((l + 0xFFF) &^ 0xFFF)
+	cbSize := count*32 + 4
+	buf, err := videocore.Alloc((cbSize + 0xFFF) &^ 0xFFF)
 	if err != nil {
 		return err
 	}
@@ -944,11 +911,11 @@ func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
 	}
 	// It's longer than toggle count because of the last page.
 	//log.Printf("len(cb) = %d", len(cb))
-	last = getBit(bits, 0, msb)
+	last = getBit(bits[0], 0, msb)
 	index := 0
-	stride = 1
-	for i := uint(1); i < uint(len(bits)*8); i++ {
-		if v := getBit(bits, i, msb); v != last || stride == 1024 || singlePackets {
+	stride = uint32(skip)
+	for i := 1; i < l; i++ {
+		if v := getBit(bits[i/8], i%8, msb); v != last || stride == maxLite || singlePackets {
 			if err := cb[index].initBlock(physBit, dest[last], stride*4, false, true, false, false, dmaPWM); err != nil {
 				return err
 			}
@@ -959,7 +926,7 @@ func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
 			stride = 0
 			last = v
 		}
-		stride++
+		stride += uint32(skip)
 	}
 	if err := cb[index].initBlock(physBit, dest[last], stride*4, false, true, false, false, dmaPWM); err != nil {
 		return err
@@ -967,7 +934,8 @@ func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
 
 	// Start clock before DMA
 	// TODO(maruel): Skip calling calcSource() a second time.
-	_, err = setPWMClockSource(hz, uint32(multiplier))
+	// TODO(simokawa): fix me
+	_, err = setPWMClockSource()
 	if err != nil {
 		return err
 	}
@@ -993,30 +961,19 @@ func dmaWriteStreamDualChannel(p *Pin, w gpiostream.Stream) error {
 	// the number of controlBlock needed to reduce memory usage.
 	// TODO(maruel): When only one channel is needed, it is much more memory
 	// efficient to use DMA to write to PWM FIFO.
-
-	// Convert the resolution into clock frequency. This is lossy.
-	resolution := w.Resolution()
-	multiplier := uint64(2) // must be more than 1.
-	hz := multiplier * uint64(time.Second/resolution)
-	// We must calculate the clock rate right away to be able to specify the
-	// right waits value.
-	_, _, _, actualHz, err := calcSource(hz, 1)
+	skip, err := overSamples(w)
 	if err != nil {
 		return err
 	}
-	if actualHz != hz {
-		return errors.New("TODO(maruel): handle oversampling")
-	}
-	// TODO(simokawa): fix Duration() which returns 8x smaller value.
-	l := int((w.Duration()+resolution/2)/resolution) * 32
+	l := int(w.Duration()/w.Resolution()) * skip * 4 // Bytes
 	log.Printf("Buffer size %d", l)
 	bufLen := (l + 0xFFF) &^ 0xFFF
-	bufSet, err := videocore.Alloc(bufLen)
+	bufSet, err := dmaBufAllocator(bufLen)
 	if err != nil {
 		return err
 	}
 	defer bufSet.Close()
-	bufClear, err := videocore.Alloc(bufLen)
+	bufClear, err := dmaBufAllocator(bufLen)
 	if err != nil {
 		return err
 	}
@@ -1030,7 +987,7 @@ func dmaWriteStreamDualChannel(p *Pin, w gpiostream.Stream) error {
 	// Needs 64x the memory since each write is 2 full uint32. On the other
 	// hand one could write 32 contiguous pins simultaneously at no cost.
 	mask := uint32(1) << uint(p.number&31)
-	if err := raster32(w, resolution, bufClear.Uint32(), bufSet.Uint32(), mask); err != nil {
+	if err := raster32(w, skip, bufClear.Uint32(), bufSet.Uint32(), mask); err != nil {
 		return err
 	}
 
@@ -1039,7 +996,8 @@ func dmaWriteStreamDualChannel(p *Pin, w gpiostream.Stream) error {
 
 	// Start clock before DMA start
 	// TODO(maruel): Skip calling calcSource() a second time.
-	_, err = setPWMClockSource(hz, uint32(multiplier))
+	// TODO(simokawa): fix me
+	_, err = setPWMClockSource()
 	if err != nil {
 		return err
 	}
@@ -1133,7 +1091,7 @@ func smokeTest() error {
 			// process startup, which may cause undesirable glitches.
 
 			// Initializes the PWM clock right away to 1MHz.
-			_, err := setPWMClockSource(1000000, 10)
+			_, err := setPWMClockSource()
 			if err != nil {
 				return err
 			}
@@ -1146,7 +1104,7 @@ func smokeTest() error {
 				return err
 			}
 		}
-		return runIO(pCB, size-2*holeSize > maxLite)
+		return runIO(pCB, size-2*holeSize <= maxLite)
 	}
 
 	return pmem.TestCopy(size, holeSize, alloc, copyMem)
@@ -1204,6 +1162,9 @@ func (d *driverDMA) Close() error {
 func DebugDMA() {
 	for i, ch := range dmaMemory.channels {
 		fmt.Println(i, ch.cs.String())
+		if ch.cs&dmaActive != 0 {
+			fmt.Printf("%x: %s", ch.cbAddr, ch.GoString())
+		}
 	}
 	fmt.Println(15, dmaChannel15.cs.String())
 }

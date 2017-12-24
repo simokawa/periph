@@ -5,11 +5,10 @@
 package bcm283x
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
-	"time"
 
-	"periph.io/x/periph/conn/gpio"
 	"periph.io/x/periph/conn/gpio/gpiostream"
 )
 
@@ -34,25 +33,17 @@ func uint32ToBit(w gpiostream.BitsLSB, d []uint8, bit uint8, skip int) {
 	}
 }
 
-func getBit(b []byte, index uint, msb bool) byte {
-	i := index / 8
+func getBit(b byte, index int, msb bool) byte {
 	var shift uint
 	if msb {
-		shift = 7 - index%8
+		shift = uint(7 - index)
 	} else {
-		shift = index % 8
+		shift = uint(index)
 	}
-	return (b[i] >> shift) & 1
+	return (b >> shift) & 1
 }
 
-func raster32Bits(s gpiostream.Stream, resolution time.Duration, clear, set []uint32, mask uint32) error {
-	if resolution != s.Resolution() {
-		// TODO(maruel): Implement nearest neighborhood filter.
-		return errors.New("bcm283x: TODO: implement resolution matching")
-	}
-	if s.Duration() > resolution*time.Duration(len(clear)) {
-		return errors.New("bcm283x: buffer is too short")
-	}
+func raster32Bits(s gpiostream.Stream, skip int, clear, set []uint32, mask uint32) error {
 	var msb bool
 	var bits []byte
 	switch b := s.(type) {
@@ -69,47 +60,30 @@ func raster32Bits(s gpiostream.Stream, resolution time.Duration, clear, set []ui
 	if n := len(bits); n < m {
 		m = n
 	}
+	index := 0
 	for i := 0; i < m; i++ {
 		for j := 0; j < 8; j++ {
-			index := uint(8*i + j)
-			if getBit(bits, index, msb) != 0 {
-				set[index] |= mask
+			if getBit(bits[i], j, msb) != 0 {
+				for k := 0; k < skip; k++ {
+					set[index] |= mask
+					index++
+				}
 			} else {
-				clear[index] |= mask
+				for k := 0; k < skip; k++ {
+					clear[index] |= mask
+					index++
+				}
 			}
 		}
 	}
 	return nil
 }
 
-func raster32Edges(e *gpiostream.EdgeStream, resolution time.Duration, clear, set []uint32, mask uint32) error {
-	if resolution < e.Res {
-		return errors.New("bcm283x: resolution is too coarse")
-	}
-	if e.Duration() > resolution*time.Duration(len(clear)) {
-		return errors.New("bcm283x: buffer is too short")
-	}
-	l := gpio.High
-	//edges := e.Edges
-	for i := range clear {
-		if l {
-			set[i] |= mask
-		} else {
-			clear[i] |= mask
-		}
-	}
-	return nil
-}
-
-func raster32Program(p *gpiostream.Program, resolution time.Duration, clear, set []uint32, mask uint32) error {
-	return errors.New("bcm283x: implement me")
-}
-
 // raster32 rasters the stream into a uint32 stream with the specified masks to
 // put in the correctly slice when the bit is set and when it is clear.
 //
 // `s` must be one of the types in this package.
-func raster32(s gpiostream.Stream, resolution time.Duration, clear, set []uint32, mask uint32) error {
+func raster32(s gpiostream.Stream, skip int, clear, set []uint32, mask uint32) error {
 	if mask == 0 {
 		return errors.New("bcm283x: mask is 0")
 	}
@@ -124,14 +98,41 @@ func raster32(s gpiostream.Stream, resolution time.Duration, clear, set []uint32
 	}
 	switch x := s.(type) {
 	case *gpiostream.BitStreamLSB:
-		return raster32Bits(x, resolution, clear, set, mask)
+		return raster32Bits(x, skip, clear, set, mask)
 	case *gpiostream.BitStreamMSB:
-		return raster32Bits(x, resolution, clear, set, mask)
+		return raster32Bits(x, skip, clear, set, mask)
 	case *gpiostream.EdgeStream:
-		return raster32Edges(x, resolution, clear, set, mask)
+		return errors.New("bcm283x: EdgeStream is not supported yet")
 	case *gpiostream.Program:
-		return raster32(x, resolution, clear, set, mask)
+		return errors.New("bcm283x: Program is not supported yet")
 	default:
 		return errors.New("bcm283x: unknown stream type")
+	}
+}
+
+// PCM/PWM DMA buf is encoded as little-endian and MSB first.
+func copyStreamToDMABuf(w gpiostream.Stream, dst []uint32) error {
+	switch v := w.(type) {
+	case *gpiostream.BitStreamMSB:
+		// This is big-endian and MSB first.
+		i := 0
+		for ; i < len(v.Bits)/4; i++ {
+			dst[i] = binary.BigEndian.Uint32(v.Bits[i*4:])
+		}
+		last := uint32(0)
+		if mod := len(v.Bits) % 4; mod > 0 {
+			for j := 0; j < mod; j++ {
+				last |= (uint32(v.Bits[i*4+j])) << uint32(8*(3-j))
+			}
+			dst[i] = last
+		}
+		return nil
+	case *gpiostream.BitStreamLSB:
+		// This is big-endian and LSB first.
+		return errors.New("TODO(simokawa): handle BitStreamLSB")
+	case *gpiostream.EdgeStream:
+		return errors.New("TODO(simokawa): handle EdgeStream")
+	default:
+		return errors.New("Unsupported Stream type")
 	}
 }

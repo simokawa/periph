@@ -152,7 +152,7 @@ func TestCopyStreamToDMAbuf(t *testing.T) {
 		Bits: []byte{1, 2, 3, 4, 5, 6, 7},
 		Res:  time.Microsecond,
 	}
-	copyStreamToDMAbuf(&stream, buf)
+	copyStreamToDMABuf(&stream, buf)
 	if buf[0] != 0x01020304 {
 		t.Fatalf("Unexpected 0x%x != 0x%x", buf[0], 0x01020304)
 	}
