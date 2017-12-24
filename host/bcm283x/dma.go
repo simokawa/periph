@@ -426,7 +426,7 @@ type controlBlock struct {
 //
 // dreq can be dmaFire, dmaPwm, dmaPcmTx, etc. waits is additional wait state
 // between clocks.
-func (c *controlBlock) initBlock(srcAddr, dstAddr, l uint32, srcIO, dstIO, srcInc, dstInc bool, dreq dmaTransferInfo, waitsIgnored int) error {
+func (c *controlBlock) initBlock(srcAddr, dstAddr, l uint32, srcIO, dstIO, srcInc, dstInc bool, dreq dmaTransferInfo) error {
 	if srcIO && dstIO {
 		return errors.New("only one of src and dst can be I/O")
 	}
@@ -475,10 +475,15 @@ func (c *controlBlock) initBlock(srcAddr, dstAddr, l uint32, srcIO, dstIO, srcIn
 		}
 	}
 	if dreq != dmaFire {
-		// dmaSrcDReq |
-		// Inserting a wait prevents multiple transfer in a DReq.
+		// Inserting a wait prevents multiple transfers in a single DReq cycle.
 		waits := 1
-		t |= dmaDstDReq | dreq | dmaTransferInfo(waits<<dmaWaitCyclesShift)
+		t |= dreq | dmaTransferInfo(waits<<dmaWaitCyclesShift)
+		if srcIO {
+			t |= dmaSrcDReq
+		}
+		if dstIO {
+			t |= dmaDstDReq
+		}
 	}
 	c.transferInfo = t
 	c.txLen = dmaTransferLen(l)
@@ -664,13 +669,13 @@ func dmaReadStream(p *Pin, b *gpiostream.BitStreamLSB) error {
 	// Convert the resolution into clock frequency. This is lossy.
 	multiplier := uint64(2)
 	hz := multiplier * uint64(time.Second/b.Res)
-	actualHz, waits, err := setPWMClockSource(hz, uint32(multiplier))
+	actualHz, err := setPWMClockSource(hz, uint32(multiplier))
 	if err != nil {
 		return err
 	}
 
 	reg := gpioBaseAddr + 0x34 + 4*uint32(p.number/32)
-	if err := cb[0].initBlock(reg, uint32(buf.PhysAddr()), uint32(l), true, false, false, true, dmaPWM, waits); err != nil {
+	if err := cb[0].initBlock(reg, uint32(buf.PhysAddr()), uint32(l), true, false, false, true, dmaPWM); err != nil {
 		return err
 	}
 	cb[0].transferInfo ^= dmaDstDReq
@@ -746,14 +751,14 @@ func dmaWriteStreamPCM(p *Pin, w gpiostream.Stream) error {
 		return err
 	}
 
-	_, waits, err := setPCMClockSource(hz)
-	waits = 0
+	// TODO(simokawa): Support oversampling
+	_, _, err = setPCMClockSource(hz)
 	if err != nil {
 		return err
 	}
 	pcmMemory.reset()
 	reg := pcmBaseAddr + 0x4 // pcmMap.fifo
-	if err := cb.initBlock(uint32(buf.PhysAddr()), reg, uint32(len(bits.Bits)), false, true, true, false, dmaPCMTX, waits); err != nil {
+	if err := cb.initBlock(uint32(buf.PhysAddr()), reg, uint32(len(bits.Bits)), false, true, true, false, dmaPCMTX); err != nil {
 		return err
 	}
 
@@ -796,7 +801,7 @@ func startPWMbyDMA(p *Pin, rng, data uint32) (*dmaChannel, *videocore.Mem, error
 	if dmaMemory == nil {
 		return nil, nil, errors.New("bcm283x-dma is not initialized; try running as root?")
 	}
-	cb, buf, err := allocateCB(4096)
+	cb, buf, err := allocateCB(2*32 + 4) // 2 CBs + mask
 	if err != nil {
 		return nil, nil, err
 	}
@@ -810,22 +815,26 @@ func startPWMbyDMA(p *Pin, rng, data uint32) (*dmaChannel, *videocore.Mem, error
 		gpioBaseAddr + 0x28 + 4*uint32(p.number/32), // clear
 		gpioBaseAddr + 0x1C + 4*uint32(p.number/32), // set
 	}
-	waits := 0
 	// High
-	if err := cb[0].initBlock(physBit, dest[1], data*4, false, true, false, false, dmaPWM, waits); err != nil {
+	if err := cb[0].initBlock(physBit, dest[1], data*4, false, true, false, false, dmaPWM); err != nil {
 		_ = buf.Close()
 		return nil, nil, err
 	}
 	cb[0].nextCB = physBuf + cbBytes
 	// Low
-	if err := cb[1].initBlock(physBit, dest[0], (rng-data)*4, false, true, false, false, dmaPWM, waits); err != nil {
+	if err := cb[1].initBlock(physBit, dest[0], (rng-data)*4, false, true, false, false, dmaPWM); err != nil {
 		_ = buf.Close()
 		return nil, nil, err
 	}
 	cb[1].nextCB = physBuf // Loop back to cb[0]
 
-	// OK with lite channels.
-	_, ch := pickChannel()
+	var blacklist []int
+	if data*4 >= 1<<16 || (rng-data)*4 >= 1<<16 {
+		// Don't use lite channels.
+		blacklist = []int{7, 8, 9, 10, 11, 12, 13, 14, 15}
+	}
+	_, ch := pickChannel(blacklist...)
+
 	if ch == nil {
 		_ = buf.Close()
 		return nil, nil, errors.New("bcm283x-dma: no channel available")
@@ -922,7 +931,6 @@ func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
 	// Waits does not seem to work as expected. Not counted as DREQ pulses?
 	// Use PWM's rng1 instead for this.
 	//waits := divs - 1
-	waits := 0
 	dest := [2]uint32{
 		gpioBaseAddr + 0x28 + 4*uint32(p.number/32), // clear
 		gpioBaseAddr + 0x1C + 4*uint32(p.number/32), // set
@@ -941,7 +949,7 @@ func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
 	stride = 1
 	for i := uint(1); i < uint(len(bits)*8); i++ {
 		if v := getBit(bits, i, msb); v != last || stride == 1024 || singlePackets {
-			if err := cb[index].initBlock(physBit, dest[last], stride*4, false, true, false, false, dmaPWM, waits); err != nil {
+			if err := cb[index].initBlock(physBit, dest[last], stride*4, false, true, false, false, dmaPWM); err != nil {
 				return err
 			}
 			// Hardcoded len(controlBlock) == 32. It is not necessary to use
@@ -953,13 +961,13 @@ func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
 		}
 		stride++
 	}
-	if err := cb[index].initBlock(physBit, dest[last], stride*4, false, true, false, false, dmaPWM, waits); err != nil {
+	if err := cb[index].initBlock(physBit, dest[last], stride*4, false, true, false, false, dmaPWM); err != nil {
 		return err
 	}
 
 	// Start clock before DMA
 	// TODO(maruel): Skip calling calcSource() a second time.
-	_, waits, err = setPWMClockSource(hz, uint32(multiplier))
+	_, err = setPWMClockSource(hz, uint32(multiplier))
 	if err != nil {
 		return err
 	}
@@ -999,7 +1007,6 @@ func dmaWriteStreamDualChannel(p *Pin, w gpiostream.Stream) error {
 	if actualHz != hz {
 		return errors.New("TODO(maruel): handle oversampling")
 	}
-	waits := 0
 	// TODO(simokawa): fix Duration() which returns 8x smaller value.
 	l := int((w.Duration()+resolution/2)/resolution) * 32
 	log.Printf("Buffer size %d", l)
@@ -1032,17 +1039,17 @@ func dmaWriteStreamDualChannel(p *Pin, w gpiostream.Stream) error {
 
 	// Start clock before DMA start
 	// TODO(maruel): Skip calling calcSource() a second time.
-	_, waits, err = setPWMClockSource(hz, uint32(multiplier))
+	_, err = setPWMClockSource(hz, uint32(multiplier))
 	if err != nil {
 		return err
 	}
 
 	regSet := gpioBaseAddr + 0x1C + 4*uint32(p.number/32)
-	if err := cb[0].initBlock(uint32(bufSet.PhysAddr()), regSet, uint32(l), false, true, true, false, dmaPWM, waits); err != nil {
+	if err := cb[0].initBlock(uint32(bufSet.PhysAddr()), regSet, uint32(l), false, true, true, false, dmaPWM); err != nil {
 		return err
 	}
 	regClear := gpioBaseAddr + 0x28 + 4*uint32(p.number/32)
-	if err := cb[1].initBlock(uint32(bufClear.PhysAddr()), regClear, uint32(l), false, true, true, false, dmaPWM, waits); err != nil {
+	if err := cb[1].initBlock(uint32(bufClear.PhysAddr()), regClear, uint32(l), false, true, true, false, dmaPWM); err != nil {
 		return err
 	}
 	log.Printf("CB: %p", cb)
@@ -1126,16 +1133,16 @@ func smokeTest() error {
 			// process startup, which may cause undesirable glitches.
 
 			// Initializes the PWM clock right away to 1MHz.
-			_, waits, err := setPWMClockSource(1000000, 10)
+			_, err := setPWMClockSource(1000000, 10)
 			if err != nil {
 				return err
 			}
-			if err := cb.initBlock(uint32(pSrc), uint32(pDst)+holeSize, size-2*holeSize, false, false, true, true, dmaPWM, waits); err != nil {
+			if err := cb.initBlock(uint32(pSrc), uint32(pDst)+holeSize, size-2*holeSize, false, false, true, true, dmaPWM); err != nil {
 				return err
 			}
 		} else {
 			// Use maximum performance.
-			if err := cb.initBlock(uint32(pSrc), uint32(pDst)+holeSize, size-2*holeSize, false, false, true, true, dmaFire, 0); err != nil {
+			if err := cb.initBlock(uint32(pSrc), uint32(pDst)+holeSize, size-2*holeSize, false, false, true, true, dmaFire); err != nil {
 				return err
 			}
 		}
