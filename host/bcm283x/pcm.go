@@ -220,7 +220,7 @@ func (p *pcmMap) set() {
 // It may select an higher frequency than the one requested.
 //
 // Other potentially good clock sources are PWM, SPI and UART.
-func setPCMClockSource(hz uint64) (uint64, int, error) {
+func setPCMClockSource(hz uint64) (uint64, uint32, error) {
 	if pcmMemory == nil {
 		return 0, 0, errors.New("subsystem PCM not initialized")
 	}
@@ -232,7 +232,7 @@ func setPCMClockSource(hz uint64) (uint64, int, error) {
 		pcmMemory.cs = 0
 	}
 	// Convert divisor into wait cycles.
-	return actual, divs - 1, err
+	return actual, divs, err
 }
 
 func pcmWriteStream(p *Pin, w gpiostream.Stream) error {
