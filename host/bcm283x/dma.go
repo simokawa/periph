@@ -678,6 +678,11 @@ func dmaWriteStreamPCM(p *Pin, w gpiostream.Stream) error {
 	if actualHz != hz {
 		return errors.New("TODO(maruel): handle oversampling")
 	}
+	pcmMemory.reset()
+	_, _, err = setPCMClockSource(hz)
+	if err != nil {
+		return err
+	}
 
 	l := (int(w.Duration()/resolution) + 7) / 8 // Bytes
 	buf, err := dmaBufAllocator((l + 0xFFF) &^ 0xFFF)
@@ -694,32 +699,15 @@ func dmaWriteStreamPCM(p *Pin, w gpiostream.Stream) error {
 		return err
 	}
 	defer pCB.Close()
-
-	pcmMemory.reset()
-	_, _, err = setPCMClockSource(hz)
-	if err != nil {
-		return err
-	}
 	reg := pcmBaseAddr + 0x4 // pcmMap.fifo
 	if err := cb[0].initBlock(uint32(buf.PhysAddr()), reg, uint32(l), false, true, true, false, dmaPCMTX); err != nil {
 		return err
 	}
 
-	// Try using a full bandwidth channel.
-	_, ch := pickChannel(6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
-	if ch == nil {
-		return errors.New("bcm283x-dma: no channel available")
-	}
-	pcmMemory.set()
-
-	defer ch.reset()
-	ch.startIO(uint32(pCB.PhysAddr()))
-
 	defer pcmMemory.reset()
+	pcmMemory.set()
+	runIO(pCB, l <= maxLite)
 
-	if err := ch.wait(); err != nil {
-		return err
-	}
 	// We have to wait PCM to be finished even after DMA finished.
 	for pcmMemory.cs&pcmTXErr == 0 {
 		Nanospin(10 * time.Nanosecond)
