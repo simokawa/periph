@@ -10,18 +10,19 @@ import (
 	"time"
 )
 
-// Page 138
-// - Two independent bit-streams
-// - Each channel either a PWM or serialised version of a 32-bit word
-// - Variable input and output resolutions.
-// - Load data from a FIFO storage block, to extent to 8 32-bit words (256
-//   bits).
-//
-// Author note: 100Mhz base resolution with a 256 bits 1-bit stream is actually
-// good enough to generate a DAC.
-var pwmMemory *pwmMap
-
 var (
+	// Page 138
+	// - Two independent bit-streams
+	// - Each channel either a PWM or serialised version of a 32-bit word
+	// - Variable input and output resolutions.
+	// - Load data from a FIFO storage block, to extent to 8 32-bit words (256
+	//   bits).
+	//
+	// Author note: 100Mhz base resolution with a 256 bits 1-bit stream is actually
+	// good enough to generate a DAC.
+	pwmMemory *pwmMap
+
+	// These clocks are shared with hardware PWM, DMA driven PWM and BitStream.
 	pwmBaseFreq uint64 = 25 * 1000 * 1000 // 25MHz
 	pwmDMAFreq  uint64 = 200 * 1000       // 200KHz
 )

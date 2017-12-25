@@ -43,7 +43,6 @@ package bcm283x
 import (
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"time"
@@ -666,11 +665,8 @@ func dmaWriteStreamPCM(p *Pin, w gpiostream.Stream) error {
 	if w.Duration() == 0 {
 		return nil
 	}
-
 	resolution := w.Resolution()
 	hz := uint64(time.Second / resolution)
-	// We must calculate the clock rate right away to be able to specify the
-	// right waits value.
 	_, _, _, actualHz, err := calcSource(hz, 1)
 	if err != nil {
 		return err
@@ -678,6 +674,8 @@ func dmaWriteStreamPCM(p *Pin, w gpiostream.Stream) error {
 	if actualHz != hz {
 		return errors.New("TODO(maruel): handle oversampling")
 	}
+
+	// Start clock earlier.
 	pcmMemory.reset()
 	_, _, err = setPCMClockSource(hz)
 	if err != nil {
@@ -705,9 +703,9 @@ func dmaWriteStreamPCM(p *Pin, w gpiostream.Stream) error {
 	}
 
 	defer pcmMemory.reset()
+	// Start transfer
 	pcmMemory.set()
 	runIO(pCB, l <= maxLite)
-
 	// We have to wait PCM to be finished even after DMA finished.
 	for pcmMemory.cs&pcmTXErr == 0 {
 		Nanospin(10 * time.Nanosecond)
@@ -770,7 +768,6 @@ func overSamples(s gpiostream.Stream) (int, error) {
 		return 0, fmt.Errorf("resolution is too small(%s)", resolution)
 	}
 	actualRes := time.Second / (freq / skip)
-	fmt.Println("res", resolution, actualRes)
 	errorPercent := 100 * (actualRes - resolution) / resolution
 	if errorPercent < -10 || errorPercent > 10 {
 		return 0, fmt.Errorf("actual resolution differs more than 10%%(%s vs %s)", resolution, actualRes)
@@ -780,17 +777,18 @@ func overSamples(s gpiostream.Stream) (int, error) {
 
 // dmaReadStream streams input from a pin.
 func dmaReadStream(p *Pin, b *gpiostream.BitStreamLSB) error {
-	_, err := setPWMClockSource()
+	skip, err := overSamples(b)
 	if err != nil {
 		return err
 	}
-	skip, err := overSamples(b)
-	if err != nil {
+	if _, err := setPWMClockSource(); err != nil {
 		return err
 	}
 
 	// Needs 32x the memory since each read is one full uint32. On the other
 	// hand one could read 32 contiguous pins simultaneously at no cost.
+	// TODO(simokawa): Implement a function to get number of bits for all type of
+	// Stream
 	l := len(b.Bits) * 8 * 4 * int(skip)
 	// TODO(simokawa): Allocate multiple pages and CBs for huge buffer.
 	buf, err := dmaBufAllocator((l + 0xFFF) &^ 0xFFF)
@@ -848,19 +846,14 @@ func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
 	if err != nil {
 		return err
 	}
-	// TODO(maruel): Fix precision, especially when the actualHz is not an exact
-	// multiple.
-
-	// Force one controlBlock per bit to look at nextCB latency.
-	singlePackets := false
 
 	// Calculate the number of controlBlock needed.
 	count := 1
-	stride := uint32(1)
+	stride := uint32(skip)
 	last := getBit(bits[0], 0, msb)
 	l := int(w.Duration() / w.Resolution()) // Bits
 	for i := 1; i < l; i++ {
-		if v := getBit(bits[i/8], i%8, msb); v != last || stride == maxLite || singlePackets {
+		if v := getBit(bits[i/8], i%8, msb); v != last || stride == maxLite {
 			last = v
 			count++
 			stride = 0
@@ -868,8 +861,8 @@ func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
 		stride += uint32(skip)
 	}
 	// 32 bytes for each CB and 4 bytes for the mask.
-	cbSize := count*32 + 4
-	buf, err := videocore.Alloc((cbSize + 0xFFF) &^ 0xFFF)
+	bufBytes := count*32 + 4
+	cb, buf, err := allocateCB((bufBytes + 0xFFF) &^ 0xFFF)
 	if err != nil {
 		return err
 	}
@@ -893,17 +886,11 @@ func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
 
 	// Render the controlBlock's to trigger the bit trigger for either Set or
 	// Clear GPIO memory registers.
-	var cb []controlBlock
-	if err := buf.AsPOD(&cb); err != nil {
-		return err
-	}
-	// It's longer than toggle count because of the last page.
-	//log.Printf("len(cb) = %d", len(cb))
 	last = getBit(bits[0], 0, msb)
 	index := 0
 	stride = uint32(skip)
 	for i := 1; i < l; i++ {
-		if v := getBit(bits[i/8], i%8, msb); v != last || stride == maxLite || singlePackets {
+		if v := getBit(bits[i/8], i%8, msb); v != last || stride == maxLite {
 			if err := cb[index].initBlock(physBit, dest[last], stride*4, false, true, false, false, dmaPWM); err != nil {
 				return err
 			}
@@ -921,24 +908,11 @@ func dmaWriteStreamEdges(p *Pin, w gpiostream.Stream) error {
 	}
 
 	// Start clock before DMA
-	// TODO(maruel): Skip calling calcSource() a second time.
-	// TODO(simokawa): fix me
 	_, err = setPWMClockSource()
 	if err != nil {
 		return err
 	}
-
-	// Try using a full bandwidth channel.
-	chNum, ch := pickChannel(6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
-	if ch == nil {
-		return errors.New("bcm283x-dma: no channel available")
-	}
-	defer ch.reset()
-	log.Printf("Channel: %d", chNum)
-	ch.startIO(uint32(buf.PhysAddr())) // cb[0]
-
-	status := ch.wait()
-	return status
+	return runIO(buf, true)
 }
 
 // dmaWriteStreamDualChannel streams data to a pin using two DMA channels.
@@ -954,7 +928,6 @@ func dmaWriteStreamDualChannel(p *Pin, w gpiostream.Stream) error {
 		return err
 	}
 	l := int(w.Duration()/w.Resolution()) * skip * 4 // Bytes
-	log.Printf("Buffer size %d", l)
 	bufLen := (l + 0xFFF) &^ 0xFFF
 	bufSet, err := dmaBufAllocator(bufLen)
 	if err != nil {
@@ -979,12 +952,7 @@ func dmaWriteStreamDualChannel(p *Pin, w gpiostream.Stream) error {
 		return err
 	}
 
-	// TODO(maruel): Fix precision, especially when the actualHz is not an exact
-	// multiple.
-
 	// Start clock before DMA start
-	// TODO(maruel): Skip calling calcSource() a second time.
-	// TODO(simokawa): fix me
 	_, err = setPWMClockSource()
 	if err != nil {
 		return err
@@ -998,7 +966,6 @@ func dmaWriteStreamDualChannel(p *Pin, w gpiostream.Stream) error {
 	if err := cb[1].initBlock(uint32(bufClear.PhysAddr()), regClear, uint32(l), false, true, true, false, dmaPWM); err != nil {
 		return err
 	}
-	log.Printf("CB: %p", cb)
 
 	// The first channel must be a full bandwidth one.
 	x, chSet := pickChannel(6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
@@ -1006,11 +973,10 @@ func dmaWriteStreamDualChannel(p *Pin, w gpiostream.Stream) error {
 		return errors.New("bcm283x-dma: no channel available")
 	}
 	defer chSet.reset()
-	y, chClear := pickChannel(x)
+	_, chClear := pickChannel(x)
 	if chClear == nil {
 		return errors.New("bcm283x-dma: no secondary channel available")
 	}
-	log.Printf("Channel: %d and %d", x, y)
 	defer chClear.reset()
 
 	// Two channel need to be synchronized but there is not such a mechanism.

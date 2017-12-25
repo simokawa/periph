@@ -10,8 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
-	"periph.io/x/periph/conn/gpio/gpiostream"
 )
 
 var pcmMemory *pcmMap
@@ -233,17 +231,4 @@ func setPCMClockSource(hz uint64) (uint64, uint32, error) {
 	}
 	// Convert divisor into wait cycles.
 	return actual, divs, err
-}
-
-func pcmWriteStream(p *Pin, w gpiostream.Stream) error {
-	bits, ok := w.(*gpiostream.BitStream)
-	if !ok {
-		return errors.New("TODO(maruel): handle other Stream than BitStream")
-	}
-	if len(bits.Bits) == 0 {
-		return nil
-	}
-	// I²S is always most significant bit first.
-
-	return nil
 }

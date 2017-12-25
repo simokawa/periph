@@ -460,8 +460,7 @@ func (p *Pin) StreamOut(s gpiostream.Stream) error {
 		if err := dmaWriteStreamPCM(p, s); err != nil {
 			return p.wrap(err)
 		}
-	} else if err := dmaWriteStreamDualChannel(p, s); err != nil {
-		//} else if err := dmaWriteStreamEdges(p, s); err != nil {
+	} else if err := dmaWriteStreamEdges(p, s); err != nil {
 		return p.wrap(err)
 	}
 	return nil
