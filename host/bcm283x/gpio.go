@@ -352,10 +352,6 @@ func (p *Pin) PWM(duty gpio.Duty, period time.Duration) error {
 	} else if duty == gpio.DutyMax {
 		return p.Out(gpio.High)
 	}
-	if period < 500*time.Nanosecond {
-		// High clock rate tends to hang the RPi. Need to investigate more.
-		return p.wrap(errors.New("period must be at least 500ns"))
-	}
 	f := out
 	useDMA := false
 	switch p.number {
@@ -379,17 +375,19 @@ func (p *Pin) PWM(duty gpio.Duty, period time.Duration) error {
 	if pwmMemory == nil || clockMemory == nil {
 		return p.wrap(errors.New("bcm283x-dma not initialized; try again as root?"))
 	}
-	p.usingClock = true
-
 	if useDMA {
+		minPeriod := 2 * time.Second / time.Duration(pwmDMAFreq)
+		if period < minPeriod {
+			return p.wrap(fmt.Errorf("period must be at least %s", minPeriod))
+		}
+
 		// Total cycles in the period
 		rng := pwmDMAFreq * uint64(period) / uint64(time.Second)
 		// Pulse width cycles
-		dat := uint32(rng * uint64(duty) / uint64(gpio.DutyMax))
-
+		dat := uint32((rng*uint64(duty) + uint64(gpio.DutyHalf)) / uint64(gpio.DutyMax))
 		var err error
 		// TODO(simokawa): Reuse DMA buffer if possible.
-		if err := p.haltDMA(); err != nil {
+		if err = p.haltDMA(); err != nil {
 			return p.wrap(err)
 		}
 		// Start clock before DMA starts.
@@ -400,13 +398,16 @@ func (p *Pin) PWM(duty gpio.Duty, period time.Duration) error {
 			return p.wrap(err)
 		}
 	} else {
-		// TODO(maruel): Leverage oversampling.
+		minPeriod := 2 * time.Second / time.Duration(pwmBaseFreq)
+		if period < minPeriod {
+			return p.wrap(fmt.Errorf("period must be at least %s", minPeriod))
+		}
 		// Total cycles in the period
 		rng := pwmBaseFreq * uint64(period) / uint64(time.Second)
 		// Pulse width cycles
-		dat := uint32(rng * uint64(duty) / uint64(gpio.DutyMax))
-
-		if _, _, err := clockMemory.pwm.set(pwmBaseFreq, 1); err != nil {
+		dat := uint32((rng*uint64(duty) + uint64(gpio.DutyHalf)) / uint64(gpio.DutyMax))
+		fmt.Println("rng", rng, "dat", dat)
+		if _, err := setPWMClockSource(); err != nil {
 			return p.wrap(err)
 		}
 		// Bit shift for PWM0 and PWM1
@@ -424,7 +425,7 @@ func (p *Pin) PWM(duty gpio.Duty, period time.Duration) error {
 		old := pwmMemory.ctl
 		pwmMemory.ctl = (old & ^(0xff << shift)) | ((pwm1Enable | pwm1MS) << shift)
 	}
-
+	p.usingClock = true
 	p.setFunction(f)
 	return nil
 }
@@ -522,7 +523,7 @@ func (p *Pin) haltClock() error {
 			return nil
 		}
 	}
-	_, _, err := clockMemory.pwm.set(0, 0)
+	err := resetPWMClockSource()
 	return err
 }
 
